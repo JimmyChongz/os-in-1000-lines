@@ -1,7 +1,7 @@
 #include "kernel.h"
 #include "common.h"
 
-extern char __bss[], __bss_end[], __stack_top[];
+extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[];
 
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
                        long arg5, long fid, long eid) {
@@ -116,6 +116,18 @@ void kernel_entry(void) {
         "lw sp,  4 * 30(sp)\n" // restore user sp
         "sret\n"  // return from supervisor trap: set PC = sepc and restore previous privilege mode
     );
+}
+
+paddr_t alloc_pages(uint32_t n) {
+    static paddr_t next_paddr = (paddr_t) __free_ram;
+    paddr_t paddr = next_paddr;
+    next_paddr += n * PAGE_SIZE;
+
+    if (next_paddr > (paddr_t) __free_ram_end) // ram 由低位址向高位址成長
+        PANIC("out of memory");
+
+    memset((void *) paddr, 0, n * PAGE_SIZE);
+    return paddr;
 }
 
 __attribute__((naked)) 
@@ -260,14 +272,17 @@ void kernel_main(void) {
     // __asm__ __volatile__("unimp"); // unimp 是一個偽指令（pseudo-instruction），會觸發非法指令例外（illegal instruction exception）。
     // printf("\nHello %s\n", "World!!!!!");
     // printf("1 + 2 = %d, %x\n", 1 + 2, 0x1234abcd);
-    
-    idle_proc = create_process((uint32_t) NULL);
-    idle_proc->pid = 0;
-    current_proc = idle_proc;
+    paddr_t paddr0 = alloc_pages(2);
+    paddr_t paddr1 = alloc_pages(1);
+    printf("alloc_pages test: paddr0=%x\n", paddr0);
+    printf("alloc_pages test: paddr1=%x\n", paddr1);
+    // idle_proc = create_process((uint32_t) NULL);
+    // idle_proc->pid = 0;
+    // current_proc = idle_proc;
 
-    proc_a = create_process((uint32_t) proc_a_entry);
-    proc_b = create_process((uint32_t) proc_b_entry);
-    yield();
+    // proc_a = create_process((uint32_t) proc_a_entry);
+    // proc_b = create_process((uint32_t) proc_b_entry);
+    // yield();
 
     PANIC("unreachable here!");
 }
