@@ -38,7 +38,8 @@ __attribute__((naked))
 __attribute__((aligned(4)))
 void kernel_entry(void) {
     __asm__ __volatile__(
-        "csrw sscratch, sp\n" /* sscratch 暫存器 (csr)，被用來暫存發生例外時的堆疊指標（stack pointer），稍後會被還原。 */
+        // Retrieve the kernel stack of the running process from sscratch.
+        "csrrw sp, sscratch, sp\n" // swap(sp, sscratch)
         "addi sp, sp, -4 * 31\n"
         "sw ra,  4 * 0(sp)\n"
         "sw gp,  4 * 1(sp)\n"
@@ -71,10 +72,15 @@ void kernel_entry(void) {
         "sw s10, 4 * 28(sp)\n"
         "sw s11, 4 * 29(sp)\n"
 
-        "csrr a0, sscratch\n"
-        "sw a0, 4 * 30(sp)\n" 
+        // Retrieve and save the sp at the time of exception.
+        "csrr a0, sscratch\n" // sscratch is user sp
+        "sw a0,  4 * 30(sp)\n" // store user sp to kernel stack
 
-        "mv a0, sp\n" // a0 = sp
+        // Reset the kernel stack.
+        "addi a0, sp, 4 * 31\n" // get original kernel sp
+        "csrw sscratch, a0\n" // reset original kernel sp to sscratch
+
+        "mv a0, sp\n" // send current sp as parameter to handle_trap
         "call handle_trap\n"
 
         "lw ra,  4 * 0(sp)\n"
@@ -107,8 +113,8 @@ void kernel_entry(void) {
         "lw s9,  4 * 27(sp)\n"
         "lw s10, 4 * 28(sp)\n"
         "lw s11, 4 * 29(sp)\n"
-        "lw sp,  4 * 30(sp)\n"
-        "sret\n"
+        "lw sp,  4 * 30(sp)\n" // restore user sp
+        "sret\n"  // return from supervisor trap: set PC = sepc and restore previous privilege mode
     );
 }
 
@@ -215,6 +221,13 @@ void yield() {
     if (next == idle_proc) 
         return;
 
+    __asm__ __volatile__(
+        "csrw sscratch, %[sscratch]\n"
+        :
+        : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
+    );
+
+    // Context Switch
     struct process *prev = current_proc;
     current_proc = next;
     switch_context(&prev->sp, &next->sp);
@@ -247,7 +260,7 @@ void kernel_main(void) {
     // __asm__ __volatile__("unimp"); // unimp 是一個偽指令（pseudo-instruction），會觸發非法指令例外（illegal instruction exception）。
     // printf("\nHello %s\n", "World!!!!!");
     // printf("1 + 2 = %d, %x\n", 1 + 2, 0x1234abcd);
-
+    
     idle_proc = create_process((uint32_t) NULL);
     idle_proc->pid = 0;
     current_proc = idle_proc;
