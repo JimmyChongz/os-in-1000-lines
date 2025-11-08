@@ -1,7 +1,7 @@
 #include "kernel.h"
 #include "common.h"
 
-extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[];
+extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[], __kernel_base[];
 
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
                        long arg5, long fid, long eid) {
@@ -130,6 +130,28 @@ paddr_t alloc_pages(uint32_t n) {
     return paddr;
 }
 
+void map_page(uint32_t *table1, vaddr_t vaddr, paddr_t paddr, uint32_t flags) {
+    if (!is_aligned(vaddr, PAGE_SIZE)) 
+        PANIC("unaligned vaddr %x", vaddr);
+    
+    if (!is_aligned(paddr, PAGE_SIZE)) 
+        PANIC("unaligned vaddr %x", paddr);
+
+    // Extract VPN[1] (bits 31-22) for first level page table index
+    uint32_t vpn1 = (vaddr >> 22) & 0x3ff;
+
+    if ((table1[vpn1] & PAGE_V) == 0) {
+        // Create the leaf page table if it doesn't exist.
+        uint32_t pt_paddr = alloc_pages(1); // return physical address of the new page table
+        table1[vpn1] = ((pt_paddr / PAGE_SIZE) << 10) | PAGE_V; // Set first level PTE: PPN (bits 31-10) and Valid bit
+    }
+
+    // Set the leaf page table entry to map the physical (Data) page.
+    uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
+    uint32_t *table0 = (uint32_t *) ((table1[vpn1] >> 10) * PAGE_SIZE);
+    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V; // Set second level PTE: PPN (bits 31-10) and Valid bit
+}
+
 __attribute__((naked)) 
 void switch_context(uint32_t *prev_sp, uint32_t *next_sp) {
     __asm__ __volatile__(
@@ -210,10 +232,18 @@ struct process *create_process(uint32_t pc) {
     *--sp = 0;                      // s0
     *--sp = (uint32_t) pc;          // ra
 
+    // Map kernel pages.
+    uint32_t *page_table = (uint32_t *) alloc_pages(1); // alloc this process' root page table
+    // printf("Proc root PT located at: %x\n", page_table);
+    for (paddr_t paddr = (paddr_t) __kernel_base; paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE) 
+        // fill this process' root page table entry
+        map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X); 
+
     // Initialize fields.
     proc->pid = i + 1;
     proc->state = PROC_RUNNABLE;
     proc->sp = (uint32_t) sp;
+    proc->page_table = page_table; 
     return proc;
 }
 
@@ -233,15 +263,20 @@ void yield() {
     if (next == idle_proc) 
         return;
 
-    __asm__ __volatile__(
-        "csrw sscratch, %[sscratch]\n"
-        :
-        : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
-    );
-
     // Context Switch
     struct process *prev = current_proc;
     current_proc = next;
+
+    __asm__ __volatile__(
+        "sfence.vma\n"
+        "csrw satp, %[satp]\n"
+        "sfence.vma\n"
+        "csrw sscratch, %[sscratch]\n"
+        :
+        : [satp] "r" (SATP_SV32 | ((uint32_t) next->page_table  / PAGE_SIZE)),
+          [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
+    );
+
     switch_context(&prev->sp, &next->sp);
 }
 
@@ -272,17 +307,23 @@ void kernel_main(void) {
     // __asm__ __volatile__("unimp"); // unimp 是一個偽指令（pseudo-instruction），會觸發非法指令例外（illegal instruction exception）。
     // printf("\nHello %s\n", "World!!!!!");
     // printf("1 + 2 = %d, %x\n", 1 + 2, 0x1234abcd);
-    paddr_t paddr0 = alloc_pages(2);
-    paddr_t paddr1 = alloc_pages(1);
-    printf("alloc_pages test: paddr0=%x\n", paddr0);
-    printf("alloc_pages test: paddr1=%x\n", paddr1);
-    // idle_proc = create_process((uint32_t) NULL);
-    // idle_proc->pid = 0;
-    // current_proc = idle_proc;
+    // paddr_t paddr0 = alloc_pages(2);
+    // paddr_t paddr1 = alloc_pages(1);
+    // printf("alloc_pages test: paddr0=%x\n", paddr0);
+    // printf("alloc_pages test: paddr1=%x\n", paddr1);
+    printf("kernel_base: %x\n", __kernel_base);
+    printf("bss: %x\n", __bss);
+    printf("bss_end: %x\n", __bss_end);
+    printf("stack_top: %x\n", __stack_top);
+    printf("free_ram: %x\n", __free_ram);
+    printf("free_ram_end: %x\n", __free_ram_end);
+    idle_proc = create_process((uint32_t) NULL);
+    idle_proc->pid = 0;
+    current_proc = idle_proc;
 
-    // proc_a = create_process((uint32_t) proc_a_entry);
-    // proc_b = create_process((uint32_t) proc_b_entry);
-    // yield();
+    proc_a = create_process((uint32_t) proc_a_entry);
+    proc_b = create_process((uint32_t) proc_b_entry);
+    yield();
 
     PANIC("unreachable here!");
 }
