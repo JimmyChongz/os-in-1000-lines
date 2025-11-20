@@ -2,6 +2,7 @@
 #include "common.h"
 
 extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[], __kernel_base[];
+extern char _binary_shell_bin_start[], _binary_shell_bin_size[];
 
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
                        long arg5, long fid, long eid) {
@@ -118,6 +119,11 @@ void kernel_entry(void) {
     );
 }
 
+void user_entry(void) {
+    static int i = 1;
+    PANIC("Process: %d Run!\n", i);
+}
+
 paddr_t alloc_pages(uint32_t n) {
     static paddr_t next_paddr = (paddr_t) __free_ram;
     paddr_t paddr = next_paddr;
@@ -201,7 +207,7 @@ void delay(void) {
 
 struct process procs[PROCS_MAX]; // All process control structures.
 
-struct process *create_process(uint32_t pc) {
+struct process *create_process(const void *image, size_t image_size) {
     // Find an unused process control structure.
     struct process *proc = NULL;
     int i;
@@ -230,7 +236,7 @@ struct process *create_process(uint32_t pc) {
     *--sp = 0;                      // s2
     *--sp = 0;                      // s1
     *--sp = 0;                      // s0
-    *--sp = (uint32_t) pc;          // ra
+    *--sp = (uint32_t) user_entry;  // ra
 
     // Map kernel pages.
     uint32_t *page_table = (uint32_t *) alloc_pages(1); // alloc this process' root page table
@@ -238,6 +244,21 @@ struct process *create_process(uint32_t pc) {
     for (paddr_t paddr = (paddr_t) __kernel_base; paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE) 
         // fill this process' root page table entry
         map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X); 
+
+    // Map user pages.
+    for (uint32_t off = 0; off < image_size; off += PAGE_SIZE) {
+        paddr_t page = alloc_pages(1);
+
+        // Handle the case where the data to be copied is smaller than the
+        // page size.
+        size_t remaining = image_size - off;
+        size_t copy_size = PAGE_SIZE <= remaining ? PAGE_SIZE : remaining;
+
+        // Fill and map the page.
+        memcpy((void *) page, image + off, copy_size);
+        map_page(page_table, USER_BASE + off, page,
+                 PAGE_U | PAGE_R | PAGE_W | PAGE_X);
+    }
 
     // Initialize fields.
     proc->pid = i + 1;
@@ -280,49 +301,16 @@ void yield() {
     switch_context(&prev->sp, &next->sp);
 }
 
-struct process *proc_a;
-struct process *proc_b;
-
-void proc_a_entry(void) {
-    printf("starting process A\n");
-    while (1) {
-        putchar('A');
-        yield();
-        delay();
-    }
-}
-
-void proc_b_entry(void) {
-    printf("starting process B\n");
-    while (1) {
-        putchar('B');
-        yield();
-        delay();
-    }
-}
-
 void kernel_main(void) {
     memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
     WRITE_CSR(stvec, (uint32_t) kernel_entry); // 將核心所定義的例外處理器 (也就是 kernel_entry) 註冊到 stvec（Supervisor Trap Vector）暫存器中。
-    // __asm__ __volatile__("unimp"); // unimp 是一個偽指令（pseudo-instruction），會觸發非法指令例外（illegal instruction exception）。
-    // printf("\nHello %s\n", "World!!!!!");
-    // printf("1 + 2 = %d, %x\n", 1 + 2, 0x1234abcd);
-    // paddr_t paddr0 = alloc_pages(2);
-    // paddr_t paddr1 = alloc_pages(1);
-    // printf("alloc_pages test: paddr0=%x\n", paddr0);
-    // printf("alloc_pages test: paddr1=%x\n", paddr1);
-    printf("kernel_base: %x\n", __kernel_base);
-    printf("bss: %x\n", __bss);
-    printf("bss_end: %x\n", __bss_end);
-    printf("stack_top: %x\n", __stack_top);
-    printf("free_ram: %x\n", __free_ram);
-    printf("free_ram_end: %x\n", __free_ram_end);
-    idle_proc = create_process((uint32_t) NULL);
+    
+    idle_proc = create_process(NULL, 0);
     idle_proc->pid = 0;
     current_proc = idle_proc;
 
-    proc_a = create_process((uint32_t) proc_a_entry);
-    proc_b = create_process((uint32_t) proc_b_entry);
+    create_process(_binary_shell_bin_start, (size_t) _binary_shell_bin_size);
+
     yield();
 
     PANIC("unreachable here!");
