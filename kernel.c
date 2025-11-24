@@ -119,9 +119,15 @@ void kernel_entry(void) {
     );
 }
 
-void user_entry(void) {
-    static int i = 1;
-    PANIC("Process: %d Run!\n", i);
+__attribute__((naked)) void user_entry(void) {
+    __asm__ __volatile__(
+        "csrw sepc, %[sepc]        \n"
+        "csrw sstatus, %[sstatus]  \n"
+        "sret                      \n"
+        :
+        : [sepc] "r" (USER_BASE),
+          [sstatus] "r" (SSTATUS_SPIE)
+    );
 }
 
 paddr_t alloc_pages(uint32_t n) {
