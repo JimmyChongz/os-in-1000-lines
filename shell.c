@@ -8,18 +8,27 @@ void main(void) {
 prompt:
         printf("> ");
         char cmdline[128];
-        for (int i = 0;; i++) {
+        int i = 0;
+        while (true) {
             char ch = getchar();
-            putchar(ch);
-            if (i == sizeof(cmdline) - 1) {
-                printf("command line too long\n");
+            if (ch == '\b' || ch == 127) {   // accept Backspace (0x08) and DEL (0x7f)
+                if (i != 0) {
+                    cmdline[--i] = '\0';
+                    // erase last char on terminal: move back, overwrite with space, move back
+                    putchar('\b');
+                    putchar(' ');
+                    putchar('\b');
+                }
+            } else if (i == sizeof(cmdline) - 1) {
+                printf("\ncommand line too long\n");
                 goto prompt;
             } else if (ch == '\r') {
                 printf("\n");
-                cmdline[i] = '\0';
+                cmdline[i++] = '\0';
                 break;
             } else {
-                cmdline[i] = ch;
+                cmdline[i++] = ch;
+                putchar(ch);
             }
         }
 
